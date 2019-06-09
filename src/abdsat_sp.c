@@ -38,7 +38,7 @@ static uint32_t seed = 0;
 int randint(uint32_t *xp, int nums)
 {
 	int i;
-	uint32_t x;
+	uint32_t x=0;
 	clock_t clk;
 	time_t sec;
 
@@ -80,14 +80,10 @@ int n = 0;		// |variables|
 int m = 0;		// |clauses|
 int **M,*base_M;
 
-int **PosOcc,*base_PosOcc;
 // PosOcc[q][p] == 1 <=> var q(0<=q<n) occurs positively in p(0<=p<m)-th clause in M
-int **NegOcc,*base_NegOcc;
 // NegOcc[q][p] == 1 <=> var q(0<=q<n) occurs negatively in p(0<=p<m)-th clause in M
 
-int **PosNegOcc,*base_PosNegOcc;
-
-void read_cnf(char* File){
+void read_cnf(const char* File){
 	// Construct matrix M from DIMACS format file "File"
 	//	 where vars are numberd from 1 to n whereas
 	//	 they are numbered from 0 to n-1 in M,PosOcc,NegOcc
@@ -123,7 +119,11 @@ void read_cnf(char* File){
 			continue;
 		}
 		for (int l=0;l<k;l++){
-			M[p][l] = lit[l];
+			if(p<m){
+				M[p][l] = lit[l];
+			}else{
+				printf("****\n");
+			}
 		}
 		p++;
 	}
@@ -132,44 +132,10 @@ void read_cnf(char* File){
 	// for (p=0;p<m;p++){ printf("%d	%d	%d\n",M[p][0],M[p][1],M[p][2]); }
 }
 
-/*
-void constructPosNegOcc(){
-	PosOcc = (int **)calloc(n,sizeof(int *));   // n x m
-	base_PosOcc = (int *)calloc(n*m,sizeof(int));
-	for (int q=0;q<n;q++) { PosOcc[q] = base_PosOcc + q * m; }
-	NegOcc = (int **)calloc(n,sizeof(int *));   // n x m
-	base_NegOcc = (int *)calloc(n*m,sizeof(int));
-	for (int q=0;q<n;q++) { NegOcc[q] = base_NegOcc + q * m; }
-
-	// Construct PosOcc and NegOcc
-
-	for (int q=0;q<n;q++) {
-		 for (int p=0;p<m;p++){
-			 if ( M[p][0] == q+1  || M[p][1] == q+1  || M[p][2] == q+1  ) { PosOcc[q][p] = 1; }
-			 if ( M[p][0] == -q-1 || M[p][1] == -q-1 || M[p][2] == -q-1 ) { NegOcc[q][p] = 1; }
-		 }
-	}
-}
-*/
-
-void constructPosNegOcc(){
-	PosNegOcc = (int **)calloc(n,sizeof(int *));   // n x m
-	base_PosNegOcc = (int *)calloc(n*m,sizeof(int));
-	for (int q=0;q<n;q++) { PosNegOcc[q] = base_PosNegOcc + q * m; }
-
-	// Construct PosNegOcc
-	for (int q=0;q<n;q++) {
-		 for (int p=0;p<m;p++){
-			 if ( M[p][0] == q+1  || M[p][1] == q+1  || M[p][2] == q+1  ) { PosNegOcc[q][p] = 1; }
-			 if ( M[p][0] == -q-1 || M[p][1] == -q-1 || M[p][2] == -q-1 ) { PosNegOcc[q][p] = -1; }
-		 }
-	}
-}
 
 int compute_error(float* u,float* C){
 	float d,u_min,u_max;
-	int split = 10;
-	float lins[split];
+	int split = 80;
 	int a[n];
 	int n1,n2,n3;  // for 3SAT
 	int num_false[split];
@@ -182,7 +148,6 @@ int compute_error(float* u,float* C){
 		if (u_max < u[q]){ u_max = u[q]; }
 	}
 	d = (u_max - u_min)/split;
-	for (int s=0;s<split;s++){ lins[s] = u_min + s * d; }
 	//printf("u_min=%lf, u_max=%lf\n",u_min,u_max);
 	//for (s=0;s<split;s++){ printf("lins[%d]=%lf\n",s,lins[s]); }
 
@@ -191,14 +156,15 @@ int compute_error(float* u,float* C){
 {
 #pragma omp for
 	for (int s=0;s<split;s++){
-		for (int q=0;q<n;q++){ a[q] = ( u[q] >= lins[s] ? 1 : 0); }
+		float lins = u_min + s * d;
+		int x = 0;
+		for (int q=0;q<n;q++){ a[q] = ( u[q] >= lins ? 1 : 0); }
 		for (int p=0;p<m;p++){				// compute C = Q*[a;1-a]
-			C[p] = ((n1 = M[p][0]) < 0 ? 1 - a[-n1-1] : a[n1-1])
+			int Cp = ((n1 = M[p][0]) < 0 ? 1 - a[-n1-1] : a[n1-1])
 				+ ((n2 = M[p][1]) < 0 ? 1 - a[-n2-1] : a[n2-1])
 				+ ((n3 = M[p][2]) < 0 ? 1 - a[-n3-1] : a[n3-1]);
+			x += (Cp == 0);
 		}
-		int x = 0;
-		for (int p=0;p<m;p++){ x += (C[p] == 0); }
 		num_false[s] = x;
 	}
 }
@@ -216,10 +182,10 @@ int compute_error(float* u,float* C){
 float compute_J(float* C,float* E,float* F,float* u){
 	float J = 0;
 	int	n1,n2,n3;		// for 3SAT
-#pragma omp parallel reduction(-:J)
+	// Compute C = Q*[u;1-u]
+#pragma omp parallel reduction(+:J)
 {
 #pragma omp for
-	// Compute C = Q*[u;1-u]
 	for (int p=0;p<m;p++){
 		C[p] = ((n1 = M[p][0]) < 0 ? 1 - u[-n1-1] : u[n1-1])
 			 + ((n2 = M[p][1]) < 0 ? 1 - u[-n2-1] : u[n2-1])
@@ -232,17 +198,15 @@ float compute_J(float* C,float* E,float* F,float* u){
 	//for (p=0;p<m;p++){ printf("C[%d]=%lf\n",p,C[p]); }
 }
 
-#pragma omp parallel reduction(-:J)
+#pragma omp parallel reduction(+:J)
 {
 #pragma omp for
-	// Compute F = u.*(1-u)
 	for (int q=0;q<n;q++){
 		F[q] = u[q] * (1 - u[q]);
 		J += F[q] * F[q];
 	}
-	// for (q=0;q<n;q++){ printf("F[%d]=%lf\n",q,F[q]); }
 }
-
+	// for (q=0;q<n;q++){ printf("F[%d]=%lf\n",q,F[q]); }
 	return J;
 }
 
@@ -251,14 +215,24 @@ void compute_Ja(float* Ja,float* C,float* F,float* u){
 {
 #pragma omp for
 	for (int q=0;q<n;q++){
-		float x = 0;
-		for (int p=0;p<m;p++){
-			//x += (NegOcc[q][p] - PosOcc[q][p]) * (C[p] < 1);
-			x += -PosNegOcc[q][p] * (C[p] < 1);
-		}
-		Ja[q] = x + F[q] * (1 - 2 * u[q]);
+		Ja[q] = F[q] * (1 - 2 * u[q]);
 	}
 }
+	// (Q2-Q1).*(C[p] < 1)
+#pragma omp parallel
+{
+#pragma omp for
+	for (int p=0;p<m;p++){
+		for (int l=0;l<k;l++){
+			int q=M[p][l]>0?M[p][l]-1:-M[p][l]-1;
+			int pn=M[p][l]>0?1:-1;
+			float Jaq= -pn * (C[p] < 1);
+#pragma omp atomic
+			Ja[q]+= Jaq;
+		}
+	}
+}
+	/////////
 }
 
 
@@ -266,9 +240,20 @@ void update_u(float* Ja,float J,float* u){
 	float alpha;
 	// Update u
 	float x = 0;
+#pragma omp parallel reduction(+:x)
+{
+#pragma omp for
 	for (int q=0;q<n;q++){ x += Ja[q] * Ja[q]; };
+}
 	alpha = J/x;
-	for (int q=0;q<n;q++){ u[q] = u[q] - alpha * Ja[q]; }
+	//for (int q=0;q<n;q++){ u[q] = u[q] - alpha * Ja[q]; }
+#pragma omp parallel
+{
+#pragma omp for
+	for (int q=0;q<n;q++){
+		u[q] = u[q] - alpha * Ja[q];
+	}
+}
 	//printf("x=%lf, alpha=%lf\n",x,alpha);
 	//for (int p=0;p<n;p++){ printf("u[%d]=%lf\n",p,u[p]); }
 }
@@ -278,13 +263,20 @@ int main(int argc, char** argv)
 	char* File = argv[1];
 	if(argc>2){
 		seed = strtol(argv[2],NULL,0);
+		printf("seed=%d\n",seed);
 	}
-	//int	sample_size = strtol(argv[5],NULL,0);	// |retry|
-	//int	max_itr = strtol(argv[6],NULL,0);
-	int sample_size = 10;//strtol(argv[5],NULL,0);	// |retry|
 	int max_itr = 300;//strtol(argv[6],NULL,0);
+	if(argc>3){
+		max_itr = strtol(argv[3],NULL,0);
+	}
+	printf("max_itr=%d\n",max_itr);
+	int sample_size = 3;//strtol(argv[5],NULL,0);	// |retry|
+	if(argc>4){
+		sample_size = strtol(argv[4],NULL,0);
+	}
+	printf("sample_size=%d\n",sample_size);
+	//int	sample_size = strtol(argv[5],NULL,0);	// |retry|
 	read_cnf(File);
-
 
 	// (m x n) matrix for a SAT instantce read from "File"
 	// M[p][q] = r <=> var |r|(1<=|r|<=n) occurs
@@ -300,7 +292,7 @@ int main(int argc, char** argv)
 	float C[m];    // = Q*[u;1-u]                   (m x 1)
 	float E[m];    // = 1-min(C,1) = (C<=1).*(1-C)	 (m x 1)
 	float F[n];    // = u.*(1-u)                    (n x 1)
-	float J;       // = sum(E) + ||u.*(1-u)||^2  cost function J
+	float J=0;       // = sum(E) + ||u.*(1-u)||^2  cost function J
 	float Ja[n];   // = (Q2-Q1)'*(C<1) + F.*(1-2*u)	J's Jacobian
 	// {(Q2-Q1)'*(C<1)}[p]
 	//   = |neg. occ. of var p in clauses falsified by u|
@@ -310,7 +302,6 @@ int main(int argc, char** argv)
 
 	// PosOcc[q][p] = 1 <=> var q(0<=q<n) positively in p(0<=p<m)-th clause in M
 	// NegOcc[p][q] = 1 <=> var q(0<=q<n) negatively in p(0<=p<m)-th clause in M
-	constructPosNegOcc();
 
 	// Initialize u by uniform dist. over [0 1]
 	rand_u(u,n);
@@ -346,7 +337,7 @@ int main(int argc, char** argv)
 			compute_Ja(Ja,C,F,u);
 			
 			update_u(Ja,J,u);
-			if (J<2.0){
+			if (J<2.0|| j==max_itr-1){
 				// Compute the least error = final_error
 				final_error = compute_error(u,C);
 				// printf(" final_error = %d\n",final_error);
@@ -366,22 +357,18 @@ int main(int argc, char** argv)
 	if (endTime.tv_nsec < startTime.tv_nsec) {
 		long sec=endTime.tv_sec - startTime.tv_sec - 1;
 		long nsec=endTime.tv_nsec + 1000000000 - startTime.tv_nsec;
-		double f=sec+nsec/1000000000.0;
+		float f=sec+nsec/1000000000.0;
 		printf("all time = %f\n",f);
 		printf("itration time = %f\n",f/itr_count);
 	} else {
 		long sec=endTime.tv_sec - startTime.tv_sec;
 		long nsec=endTime.tv_nsec - startTime.tv_nsec;
-		double f=sec+nsec/1000000000.0;
+		float f=sec+nsec/1000000000.0;
 		printf("all time = %f\n",f);
 		printf("itration time = %f\n",f/itr_count);
 	}
 
 	free(base_M);
 	free(M);
-	free(base_PosOcc);
-	free(PosOcc);
-	free(base_NegOcc);
-	free(NegOcc);
 
 }

@@ -19,5 +19,7 @@ done
 grep real ${log} >${result}
 
 done
+
 #time -p Sparrow2Riss-2018/bin/SparrowToRiss.sh ./data/problem000.dat 123 ./tmp 
+#time -p python python/tensorized_sat_solver_sp.py ./data/problem000.dat  --sample_size 100 --max_itr 300
 
