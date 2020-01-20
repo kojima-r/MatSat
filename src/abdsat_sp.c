@@ -6,7 +6,7 @@ File = 3SAT instance in DIMACS format
 k = 3, n = |variable|, m = |clause|, sample_size = |retry|
 
 (1) compile
-> gcc -O3 test.c -o test -fopenmp -lm
+>  gcc -O3 src/abdsat_sp.c -o test -fopenmp -m64 -march=native -lm -lcblas -lblas -DUSE_BLAS
 
 (2) prepare 3SAT instances by Octave
 > octave&
@@ -16,11 +16,7 @@ k = 3, n = |variable|, m = |clause|, sample_size = |retry|
 >> n=10000; m=42600; Q = gen_kSAT(3,n,m); write_SAT(Q,"3SAT_inst10000");
 
 (3) execute and measure time 
-> time ./test 3SAT_inst100 3 100	426	10	50
-> time ./test 3SAT_inst500 3 500	2130	10	300
-> time ./test 3SAT_inst1000 3 1000	4260	100	1000
-> time ./test 3SAT_inst10000 3 10000	42600	100	5000
-
+> time ./test 3SAT_inst500 [<seed> <max_itration> <sample_size(retry)>]
 */
 
 #define MAX 2048		// MAX chars in DIMACS format per row
@@ -33,6 +29,9 @@ k = 3, n = |variable|, m = |clause|, sample_size = |retry|
 #include <time.h>
 #include <math.h>
 #include <omp.h>
+#ifdef USE_BLAS
+#include <cblas.h>
+#endif
 static uint32_t seed = 0;
 
 int randint(uint32_t *xp, int nums)
@@ -85,8 +84,8 @@ int **M,*base_M;
 
 void read_cnf(const char* File){
 	// Construct matrix M from DIMACS format file "File"
-	//	 where vars are numberd from 1 to n whereas
-	//	 they are numbered from 0 to n-1 in M,PosOcc,NegOcc
+	// where vars are numberd from 1 to n whereas
+	// they are numbered from 0 to n-1 in M,PosOcc,NegOcc
 	FILE *fp ;
 	int lit[k];
 	int n_lit;
@@ -128,8 +127,8 @@ void read_cnf(const char* File){
 		p++;
 	}
 	fclose(fp);
-	// printf("k= %d	n=%d	m=%d sample_size=%d	max_itr=%d\n",k,n,m,sample_size,max_itr);
-	// for (p=0;p<m;p++){ printf("%d	%d	%d\n",M[p][0],M[p][1],M[p][2]); }
+	// printf("k= %d n=%d m=%d sample_size=%d max_itr=%d\n",k,n,m,sample_size,max_itr);
+	// for (p=0;p<m;p++){ printf("%d %d %d\n",M[p][0],M[p][1],M[p][2]); }
 }
 
 
@@ -159,7 +158,7 @@ int compute_error(float* u,float* C){
 		float lins = u_min + s * d;
 		int x = 0;
 		for (int q=0;q<n;q++){ a[q] = ( u[q] >= lins ? 1 : 0); }
-		for (int p=0;p<m;p++){				// compute C = Q*[a;1-a]
+		for (int p=0;p<m;p++){ // compute C = Q*[a;1-a]
 			int Cp = ((n1 = M[p][0]) < 0 ? 1 - a[-n1-1] : a[n1-1])
 				+ ((n2 = M[p][1]) < 0 ? 1 - a[-n2-1] : a[n2-1])
 				+ ((n3 = M[p][2]) < 0 ? 1 - a[-n3-1] : a[n3-1]);
@@ -169,7 +168,6 @@ int compute_error(float* u,float* C){
 	}
 }
 	//for (s=0;s<split;s++){ printf("num_false[%d]=%d\n",s,num_false[s]); }
-
 	// compute final_error = the least error
 	final_error = 1000000;
 	for (int s=0;s<split;s++){
@@ -240,13 +238,20 @@ void update_u(float* Ja,float J,float* u){
 	float alpha;
 	// Update u
 	float x = 0;
+#ifdef USE_BLAS
+	x=cblas_sdot(n,Ja,1,Ja,1);
+#else
 #pragma omp parallel reduction(+:x)
 {
 #pragma omp for
 	for (int q=0;q<n;q++){ x += Ja[q] * Ja[q]; };
 }
+#endif
 	alpha = J/x;
 	//for (int q=0;q<n;q++){ u[q] = u[q] - alpha * Ja[q]; }
+#ifdef USE_BLAS
+	cblas_saxpy(n,-alpha,Ja,1,u,1);
+#else
 #pragma omp parallel
 {
 #pragma omp for
@@ -254,46 +259,53 @@ void update_u(float* Ja,float J,float* u){
 		u[q] = u[q] - alpha * Ja[q];
 	}
 }
+#endif 
 	//printf("x=%lf, alpha=%lf\n",x,alpha);
 	//for (int p=0;p<n;p++){ printf("u[%d]=%lf\n",p,u[p]); }
 }
 
 int main(int argc, char** argv)
 {
+	// Argument parser
 	char* File = argv[1];
 	if(argc>2){
 		seed = strtol(argv[2],NULL,0);
 		printf("seed=%d\n",seed);
 	}
-	int max_itr = 300;//strtol(argv[6],NULL,0);
+	int max_itr = 300;
 	if(argc>3){
 		max_itr = strtol(argv[3],NULL,0);
 	}
 	printf("max_itr=%d\n",max_itr);
-	int sample_size = 3;//strtol(argv[5],NULL,0);	// |retry|
+	int sample_size = 3;
 	if(argc>4){
 		sample_size = strtol(argv[4],NULL,0);
 	}
 	printf("sample_size=%d\n",sample_size);
-	//int	sample_size = strtol(argv[5],NULL,0);	// |retry|
 	read_cnf(File);
 
 	// (m x n) matrix for a SAT instantce read from "File"
 	// M[p][q] = r <=> var |r|(1<=|r|<=n) occurs
-	//		in p(0<=p<m)-th clause as q(= 0,1,2)-th literal
+	// in p(0<=p<m)-th clause as q(= 0,1,2)-th literal
 	// [-2 3 -5 0] = 1st row in DIMACS file where n = 5
-	//	=> M[0][0] = -2, M[0][1] = 3, M[0][2] = -5
-	//		 Q(0,:) = [0 0 1 0 0	0 1 0 0 1] = [Q1 Q2]
-	//		 Q1 = [0 0 1 0 0;...], Q2 = [0 1 0 0 1;...]
+	//  => M[0][0] = -2, M[0][1] = 3, M[0][2] = -5
+	//     Q(0,:) = [0 0 1 0 0  0 1 0 0 1] = [Q1 Q2]
+	//     Q1 = [0 0 1 0 0;...], Q2 = [0 1 0 0 1;...]
 
 
-	float u[n];    // continuous assignment(model)	 (n x 1)
-	float u0[n];   // continuous assignment(model)	 (n x 1)
-	float C[m];    // = Q*[u;1-u]                   (m x 1)
-	float E[m];    // = 1-min(C,1) = (C<=1).*(1-C)	 (m x 1)
-	float F[n];    // = u.*(1-u)                    (n x 1)
-	float J=0;       // = sum(E) + ||u.*(1-u)||^2  cost function J
-	float Ja[n];   // = (Q2-Q1)'*(C<1) + F.*(1-2*u)	J's Jacobian
+	float* u;    // continuous assignment(model)	 (n x 1)
+	u = (float *)calloc(n,sizeof(float));
+	float* u0;   // continuous assignment(model)	 (n x 1)
+	u0 = (float *)calloc(n,sizeof(float));
+	float* C;    // = Q*[u;1-u]                   (m x 1)
+	C = (float *)calloc(m,sizeof(float));
+	float* E;    // = 1-min(C,1) = (C<=1).*(1-C)	 (m x 1)
+	E = (float *)calloc(m,sizeof(float));
+	float* F;    // = u.*(1-u)                    (n x 1)
+	F = (float *)calloc(n,sizeof(float));
+	float J=0;     // = sum(E) + ||u.*(1-u)||^2  cost function J
+	float* Ja;   // = (Q2-Q1)'*(C<1) + F.*(1-2*u)	J's Jacobian
+	Ja = (float *)calloc(n,sizeof(float));
 	// {(Q2-Q1)'*(C<1)}[p]
 	//   = |neg. occ. of var p in clauses falsified by u|
 	//    - |pos. occ. of var p in clauses falsified by u|
@@ -314,15 +326,13 @@ int main(int argc, char** argv)
 	for (int i=0;i<sample_size;i++){
 		final_error=ini_error = compute_error(u,C);
 /*	Iterate gradiate descent by Newton's method
-
-		for j=1:max_itr				% enter j-loop to mimize J
-			C = Q2t1 + Q12*u;		% = Q*[u;1-u]	 (m x 1)
-			E = (C<=1).*(1-C);	 % = 1-min(C,1)	(m x 1)
-			F = u.*(1-u);				% (n x 1) 
-
+		for j=1:max_itr               % enter j-loop to mimize J
+			C = Q2t1 + Q12*u;     % = Q*[u;1-u]	 (m x 1)
+			E = (C<=1).*(1-C);    % = 1-min(C,1)	(m x 1)
+			F = u.*(1-u);         % (n x 1) 
 			%% update u by Newton's method
-			J = sum(E) + sumsq(F);						 % cost function J
-			Ja = (Q2-Q1)'*(C<1) + F.*(1-2*u);	% J's Jacobian	(n x 1)
+			J = sum(E) + sumsq(F);% cost function J
+			Ja = (Q2-Q1)'*(C<1) + F.*(1-2*u); % J's Jacobian  (n x 1)
 			alpha = J/sumsq(Ja);
 			u = u - alpha*Ja;
 		endfor

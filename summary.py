@@ -23,6 +23,7 @@ for filename in args.input:
 	for a in open(filename):
 		arr=a.strip().split(" ")
 		x.append(float(arr[1]))
-	line=[filename,str(np.mean(x)),str(np.std(x))]
+	#line=[filename,str(np.mean(x)),str(np.std(x))]
+	line=[filename,str(np.median(x)),str(np.std(x))]
 	print("\t".join(line))
 
