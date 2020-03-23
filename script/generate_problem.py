@@ -56,10 +56,10 @@ else:
 import os
 
 os.makedirs('data/',exist_ok=True)
-print("[SAVE] data/")
 
 for k in range(num_problem):
-	filename="data/problem%03d.dat"%(k,)
+	filename="data/problem%03d.%06d.dat"%(k,n)
+	print("[SAVE]",filename)
 	fp=open(filename,"w")
 	mdl0 = np.random.rand(n,1)<0.5
 	ans_mdl=np.concatenate([mdl0,1-mdl0],axis=0)
