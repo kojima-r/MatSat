@@ -25,9 +25,10 @@
 #include <sys/time.h>
 #endif
 
-
-#define nsat 3 	// =3(always),3-SAT
-#define split 80
+#define nsat 7 	// =3(always),3-SAT
+#define MAX_NSAT_CHECK 10
+int split=256;
+float perturb=0.55;
 
 #define block 1024
 #define block1 1
@@ -37,11 +38,14 @@
 
 int n = 0;		// |variables|
 int m = 0;		// |clauses|
+int max_try = 3;
 int *base_M;
 static uint32_t seed = 0;
 
 __device__ int d_m;
 __device__ int d_n;
+__device__ int d_split;
+__device__ float d_perturb;
 __device__ int d_max_itr;
 __device__ int d_nblockA;
 __device__ int d_nblockB;
@@ -68,6 +72,9 @@ __device__ int* d_M;
 __device__ int* d_a;
 __device__ int* d_Cp0;
 __device__ int* d_intA;
+
+// for anealing
+//__device__ int d_max_try;
 
 #define INDEX(ROW, COL, rows) ((COL) * (rows) + (ROW))
 
@@ -221,7 +228,10 @@ void read_cnf(const char* File){
 	// where vars are numberd from 1 to n whereas
 	// they are numbered from 0 to n-1 in M,PosOcc,NegOcc
 	FILE *fp ;
-	int lit[nsat];
+	int lit[MAX_NSAT_CHECK];
+
+	static char separator[] = " \t\n";
+	char *token;
 
 	int n_lit;
 	char c1[3];
@@ -233,7 +243,7 @@ void read_cnf(const char* File){
 		printf( "file open failed\n" );
 		exit(1);
 	};
-
+		
 	while((fgets(buf,MAX,fp) != NULL)){
 		if(buf[0] == 'c'){
 			continue;
@@ -241,25 +251,33 @@ void read_cnf(const char* File){
 		if(buf[0] == 'p'){
 			sscanf(buf,"%s %s %d %d",c1,c2, &n, &m);
 			printf("n=%d\n",n);
-//m=100000;
 			printf("m=%d\n",m);
 			base_M = (int *)calloc(m*nsat,sizeof(int));
 //			for (int p=0;p<m;p++){ M[p] = base_M + p * nsat; }
 			continue;
 		}
-		n_lit = sscanf(buf,"%d  %d  %d",&lit[0],&lit[1],&lit[2]);
-		if (n_lit != nsat) {
-			printf( "not nsat=3 literals, ignored\n" );
-			continue;
+		n_lit = 0;
+		if ((token = strtok(buf, separator)) != NULL) {
+			do {
+				lit[n_lit] = atoi(token);
+			}while (++n_lit < MAX_NSAT_CHECK && (token = strtok(NULL, separator)) != NULL);
+			if (n_lit > nsat) {
+				printf( "over nsat=%d literals, ignored\n",nsat);
+			}
 		}
+		for (int j=n_lit;j<nsat;j++){ lit[j]=0; }
 		for (int l=0;l<nsat;l++){
-			if(p<m)
+			if (p<m){
 				base_M[INDEX(p,l,m)] = lit[l];
+			} else {
+				printf("****\n");
+			}  // M[p][l]=0 if |p-th clause|<l
 		}
+		//for (int j=0;j<k;j++){ printf(" %d",M[p][j]); }; printf("\n");
 		p++;
 	}
 	fclose(fp);
-	// printf("k= %d n=%d m=%d sample_size=%d max_itr=%d\n",nsat,n,m,sample_size,max_itr);
+	// printf("k= %d n=%d m=%d max_try=%d max_itr=%d\n",nsat,n,m,max_try,max_itr);
 	// for (p=0;p<m;p++){ printf("%d %d %d\n",M[p][0],M[p][1],M[p][2]); }
 
 }
@@ -532,17 +550,17 @@ __device__ int d_compute_error ()
 	reduceMinMaxFloat<<<grid32, block>>>(d_u, d_u, d_floatA, d_floatA2, d_n);
 	reduceMinMaxFloat<<<grid1, block32>>>(d_floatA, d_floatA2, &du_min, &du_max, 32);
 
-	dd = (du_max - du_min)/split;
+	dd = (du_max - du_min)/d_split;
 
 	// Compute num_false[s] = sum((Q*[a;1-a])==0) for each threshold s
-	for (int s=0;s<split;s++){
+	for (int s=0;s<d_split;s++){
 		d_compute_error_1<<<d_nblockA, block>>>(s);
 		d_compute_error_2<<<d_nblockB, block>>>();
 		reduceAddInt<<<grid1, block>>>(d_Cp0, d_intA, d_nblockB,s);
 	}
 
 	// compute final_error = the least error
-	reduceMinInt<<<grid1, block32>>>(d_intA, &d_final_error, split);
+	reduceMinInt<<<grid1, block32>>>(d_intA, &d_final_error, d_split);
 
 	return d_final_error;
 }
@@ -741,6 +759,11 @@ __global__ void d_calc ()
 		cudaDeviceSynchronize();
 		d_J = d_J1+d_J2;
 		d_alpha = (d_J)/d_sumJaJa;
+
+		// anealing
+		//float r = j/d_max_itr;
+		//d_alpha = (0.1+ 0.9*(1-r)) * d_alpha;
+
 		d_update_u_2<<<d_nblockA, block>>>();
 
 		cudaDeviceSynchronize();
@@ -760,13 +783,16 @@ __global__ void d_calc ()
 }
 
 
-__global__ void d_update_initu ()
+__global__ void d_update_initu (int i)
 {
 	unsigned int nth = gridDim.x * blockDim.x;
 	int idx = threadIdx.x + blockIdx.x * blockDim.x;
-
+	//float d = 0.1*i/d_max_try;
 	while(idx < d_n){
-		d_u[idx] = 0.5*d_u[idx] + 0.5*d_u0[idx];
+		//perturbation
+		d_u[idx] = (1.0-d_perturb)*d_u[idx] +d_perturb*d_u0[idx];
+		//
+		//d_u[idx] = (0.6+d)*d_u[idx] + (0.4-d)*d_u0[idx];
 		idx += nth;
 	}
 }
@@ -786,11 +812,18 @@ int main(int argc, char** argv)
 	}
 
 	printf("max_itr=%d\n",max_itr);
-	int sample_size = 3;
 	if(argc>4){
-		sample_size = strtol(argv[4],NULL,0);
+		max_try = strtol(argv[4],NULL,0);
 	}
-	printf("sample_size=%d\n",sample_size);
+	printf("max_try=%d\n",max_try);
+	if(argc>5){
+		split = strtol(argv[5],NULL,0);
+	}
+	printf("split=%d\n",split);
+	if(argc>6){
+		perturb = strtof(argv[6],NULL);
+	}
+	printf("perturb=%f\n",perturb);
 	read_cnf(File);
 
 
@@ -833,6 +866,8 @@ int main(int argc, char** argv)
 	CHECK(cudaMemcpyToSymbol( d_m, &m, sizeof(int)));	
 	CHECK(cudaMemcpyToSymbol( d_n, &n, sizeof(int)));	
 	CHECK(cudaMemcpyToSymbol( d_max_itr, &max_itr, sizeof(int)));	
+	CHECK(cudaMemcpyToSymbol( d_split, &split, sizeof(int)));	
+	CHECK(cudaMemcpyToSymbol( d_perturb, &perturb, sizeof(float)));	
 	CHECK(cudaMemcpyToSymbol( d_nblockA, &nblockA, sizeof(int)));	
 	CHECK(cudaMemcpyToSymbol( d_nblockB, &nblockB, sizeof(int)));	
 	float* ptr_d_u;
@@ -872,6 +907,8 @@ int main(int argc, char** argv)
 
 	int itr_count=0;
 	CHECK(cudaMemcpyToSymbol(d_itr_count, &itr_count, sizeof(int)));
+	// for anealing
+	//CHECK(cudaMemcpyToSymbol(d_max_try, &max_try, sizeof(int)));	
 
 
 	double iStart = seconds();
@@ -880,7 +917,7 @@ int main(int argc, char** argv)
 
 
 	int ini_error,final_error;
-	for (int i=0;i<sample_size;i++){
+	for (int i=0;i<max_try;i++){
 
 		/*	Iterate gradiate descent by Newton's method
 			for j=1:max_itr               % enter j-loop to mimize J
@@ -909,11 +946,11 @@ int main(int argc, char** argv)
 			break;
 
 		CHECK(cudaStreamSynchronize(stream));
-		d_update_initu<<<nblockA, block>>>();
+		d_update_initu<<<nblockA, block>>>(i);
 
 		CHECK(cudaDeviceSynchronize());
 		CHECK(cudaGetLastError());
-	} // for (i=0;i<sample_size;i++){
+	} // for (i=0;i<max_try;i++){
 
 	double iElaps = seconds() - iStart;
 	CHECK(cudaMemcpyFromSymbol(&itr_count, d_itr_count, sizeof(int)));
