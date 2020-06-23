@@ -28,7 +28,7 @@
 #define nsat 7 	// =3(always),3-SAT
 #define MAX_NSAT_CHECK 10
 int split=256;
-float perturb=0.55;
+float perturb=0.5;
 
 #define block 1024
 #define block1 1
@@ -59,9 +59,16 @@ __device__ float du_max;
 __device__ float dd;
 __device__ int d_ini_error;
 __device__ int d_final_error;
+__device__ int d_final_error_index;
 __device__ int d_itr_count;
 __device__ float* d_u;
 __device__ float* d_u0;
+__device__ float* d_wu;
+__device__ float* d_wM;
+__device__ float* d_wu_cnt;
+__device__ float* d_wM_cnt;
+__device__ float d_wu_sum;
+__device__ float d_wM_sum;
 __device__ float* d_E;
 __device__ float* d_FF;
 __device__ float* d_Ja;
@@ -444,49 +451,88 @@ __global__ void reduceMinMaxFloat(float* d_iFloat1, float* d_iFloat2, float *d_m
 
 
 // BlockDim.x should be less than 1025, more than 63 and 2^n where n is a positive integer.
-__global__ void reduceMinInt(int* d_iInt, int *d_result, unsigned int n)
+__global__ void reduceMinInt(int* d_iInt, int *d_result, int *d_result_index,unsigned int n)
 {
 	unsigned int tid = threadIdx.x;
 	unsigned int nth = gridDim.x * blockDim.x;
 
 	__shared__ int smem[1024];
+	__shared__ int smem_arg[1024];
 	smem[tid] = INT_MAX;
+	smem_arg[tid] = INT_MAX;
 
 	int idx = tid + blockIdx.x * blockDim.x;
 	while(idx < n){
 		int tmpf = d_iInt[idx];
-		if (smem[tid] > tmpf) smem[tid] = tmpf;
+		if (smem[tid] > tmpf){
+			smem[tid] = tmpf;
+			smem_arg[tid] = idx;
+		}
 		idx += nth;
 	}
 	__syncthreads();
 
 	// in-place reduction in shared memory
 	if (blockDim.x >= 1024 && tid < 512)
-		if (smem[tid] > smem[tid + 512]) smem[tid] = smem[tid + 512];
+		if (smem[tid] > smem[tid + 512]){
+			smem[tid] = smem[tid + 512];
+			smem_arg[tid] = smem_arg[tid + 512];
+		}
 	__syncthreads();
 	if (blockDim.x >= 512 && tid < 256)
-		if (smem[tid] > smem[tid + 256]) smem[tid] = smem[tid + 256];
+		if (smem[tid] > smem[tid + 256]){
+			smem[tid] = smem[tid + 256];
+			smem_arg[tid] = smem_arg[tid + 256];
+		}
 	__syncthreads();
 	if (blockDim.x >= 256 && tid < 128)
-		if (smem[tid] > smem[tid + 128]) smem[tid] = smem[tid + 128];
+		if (smem[tid] > smem[tid + 128]){
+			smem[tid] = smem[tid + 128];
+			smem_arg[tid] = smem_arg[tid + 128];
+		}
 	__syncthreads();
 	if (blockDim.x >= 128 && tid < 64)
-		if (smem[tid] > smem[tid + 64]) smem[tid] = smem[tid + 64];
+		if (smem[tid] > smem[tid + 64]){
+			smem[tid] = smem[tid + 64];
+			smem_arg[tid] = smem_arg[tid + 64];
+		}
 	__syncthreads();
 	// unrolling warp
 	if (tid < 32)
 	{
 		volatile int *vsmem = smem;
-		if (blockDim.x >= 64 && vsmem[tid] > vsmem[tid + 32]) vsmem[tid] = vsmem[tid + 32];
-		if (blockDim.x >= 32 && vsmem[tid] > vsmem[tid + 16]) vsmem[tid] = vsmem[tid + 16];
-		if (blockDim.x >= 16 && vsmem[tid] > vsmem[tid + 8]) vsmem[tid] = vsmem[tid + 8];
-		if (blockDim.x >= 8  && vsmem[tid] > vsmem[tid + 4]) vsmem[tid] = vsmem[tid + 4];
-		if (blockDim.x >= 4  && vsmem[tid] > vsmem[tid + 2]) vsmem[tid] = vsmem[tid + 2];
-		if (blockDim.x >= 2  && vsmem[tid] > vsmem[tid + 1]) vsmem[tid] = vsmem[tid + 1];
+		volatile int *vsmem_arg = smem_arg;
+		if (blockDim.x >= 64 && vsmem[tid] > vsmem[tid + 32]){
+			vsmem[tid] = vsmem[tid + 32];
+			vsmem_arg[tid] = vsmem_arg[tid + 32];
+		}
+		if (blockDim.x >= 32 && vsmem[tid] > vsmem[tid + 16]){
+			vsmem[tid] = vsmem[tid + 16];
+			vsmem_arg[tid] = vsmem_arg[tid + 16];
+		}
+		if (blockDim.x >= 16 && vsmem[tid] > vsmem[tid + 8]){
+			vsmem[tid] = vsmem[tid + 8];
+			vsmem_arg[tid] = vsmem_arg[tid + 8];
+		}
+		if (blockDim.x >= 8  && vsmem[tid] > vsmem[tid + 4]){
+			vsmem[tid] = vsmem[tid + 4];
+			vsmem_arg[tid] = vsmem_arg[tid + 4];
+		}
+		if (blockDim.x >= 4  && vsmem[tid] > vsmem[tid + 2]){
+			vsmem[tid] = vsmem[tid + 2];
+			vsmem_arg[tid] = vsmem_arg[tid + 2];
+		}
+		if (blockDim.x >= 2  && vsmem[tid] > vsmem[tid + 1]){
+			vsmem[tid] = vsmem[tid + 1];
+			vsmem_arg[tid] = vsmem_arg[tid + 1];
+		}
 	}
 
 	// write result for this block to global mem
-	if (tid == 0) d_result[blockIdx.x] = smem[0];
+	if (tid == 0){
+		d_result[blockIdx.x] = smem[0];
+		d_result_index[blockIdx.x] = smem_arg[0];
+	}
 
 }
 
@@ -509,9 +555,15 @@ __global__ void d_compute_error_2(){
 		int Cp = 0;
 		for(int i=0;i<nsat;i++){
 			M = d_M[INDEX(idx, i, d_m)];
-			Cp += (M < 0 ? 1 - d_a[-M-1] : d_a[M-1]);
+			//Cp += (M < 0 ? 1 - d_a[-M-1] : d_a[M-1]);
+			if(M < 0){
+				Cp += 1 - d_a[-M-1];
+			}else if (M>0){
+				Cp += d_a[M-1];
+			}
 		}
 		smem[tid] = (Cp == 0);
+		d_wM_cnt[idx]=(Cp == 0);
 	}
 
 	__syncthreads();
@@ -540,9 +592,74 @@ __global__ void d_compute_error_2(){
 	// write result for this block to global mem
 	if (tid == 0) d_Cp0[blockIdx.x] = smem[0];
 
+}
+
+__global__ void d_init_wM(){
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+	if(idx < d_m){
+		d_wM[idx]=1;
+	}
+}
+
+__global__ void d_compute_error_wM(){
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+
+	__shared__ int smem[1024];
+	smem[tid] = 0;
+	if(idx < d_m){
+		int M;
+		int Cp = 0;
+		for(int i=0;i<nsat;i++){
+			M = d_M[INDEX(idx, i, d_m)];
+			//Cp += (M < 0 ? 1 - d_a[-M-1] : d_a[M-1]);
+			if(M < 0){
+				Cp += 1 - d_a[-M-1];
+			}else if (M>0){
+				Cp += d_a[M-1];
+			}
+		}
+		d_wM[idx] += (Cp == 0);
+		smem[tid] = d_wM[idx] ;
+	}
+
+	__syncthreads();
+
+	// in-place reduction in shared memory
+	if (blockDim.x >= 1024 && tid < 512) smem[tid] += smem[tid + 512];
+	__syncthreads();
+	if (blockDim.x >= 512 && tid < 256) smem[tid] += smem[tid + 256];
+	__syncthreads();
+	if (blockDim.x >= 256 && tid < 128) smem[tid] += smem[tid + 128];
+	__syncthreads();
+	if (blockDim.x >= 128 && tid < 64)  smem[tid] += smem[tid + 64];
+	__syncthreads();
+	// unrolling warp
+	if (tid < 32)
+	{
+		volatile int *vsmem = smem;
+		if (blockDim.x >= 64) vsmem[tid] += vsmem[tid + 32];
+		if (blockDim.x >= 32) vsmem[tid] += vsmem[tid + 16];
+		if (blockDim.x >= 16) vsmem[tid] += vsmem[tid +  8];
+		if (blockDim.x >= 8)  vsmem[tid] += vsmem[tid +  4];
+		if (blockDim.x >= 4)  vsmem[tid] += vsmem[tid +  2];
+		if (blockDim.x >= 2)  vsmem[tid] += vsmem[tid +  1];
+	}
+
+	// write result for this block to global mem
+	if (tid == 0) d_wM_cnt[blockIdx.x] = smem[0];
 
 }
 
+__global__ void d_compute_normalize_wM(){
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+	float d_wM_mean =d_wM_sum / (float) d_m;
+	if(idx < d_m){
+		d_wM[idx] = d_wM[idx]/d_wM_mean;
+	}
+}
 
 __device__ int d_compute_error ()
 {
@@ -556,16 +673,141 @@ __device__ int d_compute_error ()
 	for (int s=0;s<d_split;s++){
 		d_compute_error_1<<<d_nblockA, block>>>(s);
 		d_compute_error_2<<<d_nblockB, block>>>();
+		//d_intA[s]<=sum_0^n(d_Cp0)
 		reduceAddInt<<<grid1, block>>>(d_Cp0, d_intA, d_nblockB,s);
 	}
 
 	// compute final_error = the least error
-	reduceMinInt<<<grid1, block32>>>(d_intA, &d_final_error, d_split);
+	reduceMinInt<<<grid1, block32>>>(d_intA, &d_final_error, &d_final_error_index, d_split);
 
+	//d_final_error_index
 	return d_final_error;
 }
 
+__device__ int d_compute_error_and_update_weight()
+{
+	// Compute thresholds lins[]
+	reduceMinMaxFloat<<<grid32, block>>>(d_u, d_u, d_floatA, d_floatA2, d_n);
+	reduceMinMaxFloat<<<grid1, block32>>>(d_floatA, d_floatA2, &du_min, &du_max, 32);
 
+	dd = (du_max - du_min)/d_split;
+
+	// Compute num_false[s] = sum((Q*[a;1-a])==0) for each threshold s
+	for (int s=0;s<d_split;s++){
+		d_compute_error_1<<<d_nblockA, block>>>(s);
+		d_compute_error_2<<<d_nblockB, block>>>();
+		//d_intA[s]<=sum_0^n(d_Cp0)
+		reduceAddInt<<<grid1, block>>>(d_Cp0, d_intA, d_nblockB,s);
+	}
+
+	// compute final_error = the least error
+	reduceMinInt<<<grid1, block32>>>(d_intA, &d_final_error, &d_final_error_index, d_split);
+
+	d_compute_error_1<<<d_nblockA, block>>>(d_final_error_index);
+	d_compute_error_wM<<<d_nblockB, block>>>();
+	reduceAddFloat<<<grid1, block>>>(d_wM_cnt, &d_wM_sum, d_nblockB);
+	d_compute_normalize_wM<<<d_nblockB, block>>>();
+
+	//d_final_error_index
+	return d_final_error;
+}
+
+__global__ void d_compute_weight_u_0()
+{
+	// set index
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+
+	//__shared__ float smem[1024];
+	//smem[tid] = 0.0;
+	if(idx < d_n){
+		d_wu[idx]=0;
+		//float w = d_uw[idx];
+		//smem[tid] = w;
+	}
+}
+
+__global__ void d_compute_weight_u_1()
+{
+	// set index
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+	__shared__ float smem[1024];
+	smem[tid] = 0.0;
+	if(idx < d_m){
+		int M;
+		for(int i=0;i<nsat;i++){
+			M = d_M[INDEX(idx, i, d_m)];
+			if(M < 0){
+				M = -M-1;
+				atomicAdd(&d_wu[M], 1);
+				smem[tid]+=1;
+			}else if (M>0){
+				M = M-1;
+				atomicAdd(&d_wu[M], 1);
+				smem[tid]+=1;
+			}
+		}
+	}
+	__syncthreads();
+	// in-place reduction in shared memory
+	if (blockDim.x >= 1024 && tid < 512) smem[tid] += smem[tid + 512];
+	__syncthreads();
+	if (blockDim.x >= 512 && tid < 256) smem[tid] += smem[tid + 256];
+	__syncthreads();
+	if (blockDim.x >= 256 && tid < 128) smem[tid] += smem[tid + 128];
+	__syncthreads();
+	if (blockDim.x >= 128 && tid < 64)  smem[tid] += smem[tid + 64];
+	__syncthreads();
+	// unrolling warp
+	if (tid < 32)
+	{
+		volatile float *vsmem = smem;
+		if (blockDim.x >= 64) vsmem[tid] += vsmem[tid + 32];
+		if (blockDim.x >= 32) vsmem[tid] += vsmem[tid + 16];
+		if (blockDim.x >= 16) vsmem[tid] += vsmem[tid +  8];
+		if (blockDim.x >= 8)  vsmem[tid] += vsmem[tid +  4];
+		if (blockDim.x >= 4)  vsmem[tid] += vsmem[tid +  2];
+		if (blockDim.x >= 2)  vsmem[tid] += vsmem[tid +  1];
+	}
+	// write result for this block to global mem
+	if (tid == 0) d_wu_cnt[blockIdx.x] = smem[0];
+}
+
+__global__ void d_compute_weight_u_2()
+{
+	// set index
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+
+	//__shared__ float smem[1024];
+	//smem[tid] = 0.0;
+	float d_wu_mean =d_wu_sum / (float) d_n;
+	if(idx < d_n){
+		d_wu[idx] = d_wu[idx]/d_wu_mean;
+	}
+}
+
+__global__ void d_compute_weight_u_3()
+{
+	// set index
+	unsigned int tid = threadIdx.x;
+	unsigned int idx = blockIdx.x * blockDim.x + tid;
+	if(idx < d_m){
+		d_wM[idx]=0;
+		int M;
+		for(int i=0;i<nsat;i++){
+			M = d_M[INDEX(idx, i, d_m)];
+			if(M < 0){
+				M = -M-1;
+				d_wM[idx]+=d_wu[M];
+			}else if (M>0){
+				M = M-1;
+				d_wM[idx]+=d_wu[M];
+			}
+		}
+	}
+}
 
 __global__ void d_compute_J_Ja_1 ()
 {
@@ -627,19 +869,25 @@ __global__ void d_compute_J_Ja_2 ()
 		float dC = 0.0;
 		for(int i=0;i<nsat;i++){
 			M[i] = d_M[INDEX(idx, i, d_m)];
-			dC += (M[i] < 0 ? 1 - d_u[-M[i]-1] : d_u[M[i]-1]);
+			if(M[i]!=0){
+				dC += (M[i] < 0 ? 1 - d_u[-M[i]-1] : d_u[M[i]-1]);
+			}
 		}
 		// Compute E = (C<=1).*(1-C) = 1-min(C,1)
 		smem[tid] = (dC <= 1.0 ? 1.0 - dC : 0.0);
-	
 		int q;
 		int pn;
 		float Jaq;
+		float w = 0.0;
 		for(int i=0;i<nsat;i++){
-			q = (M[i] > 0 ? M[i]-1 : -M[i]-1);
-			pn = (M[i] > 0 ? 1 : -1);
-			Jaq= (dC < 1.0 ? -1.0*pn : 0.0);
-			atomicAdd(&d_Ja[q], Jaq);
+			if(M[i]!=0){
+				q = (M[i] > 0 ? M[i]-1 : -M[i]-1);
+				w = (M[i] > 0 ? d_wu[M[i]-1] : d_wu[-M[i]-1]);
+				//w+=d_wM[idx];
+				pn= (M[i] > 0 ? w : -w);
+				Jaq= (dC < 1.0 ? -1.0*pn : 0.0);
+				atomicAdd(&d_Ja[q], Jaq);
+			}
 		}
 	}
 
@@ -722,9 +970,14 @@ __global__ void d_update_u_2 ()
 
 
 __global__ void d_set_device_ptr (
+	float* ptr_d_wu,float* ptr_d_wM,float* ptr_d_wu_cnt,float* ptr_d_wM_cnt,
 	float* ptr_d_u, float* ptr_d_u0, float* ptr_d_E, float* ptr_d_FF, float* ptr_d_Ja, float* ptr_d_JaJa,
 	float* ptr_d_floatA, float* ptr_d_floatA2, int* ptr_d_M, int* ptr_d_a, int* ptr_d_Cp0, int* ptr_d_intA)
 {
+	d_wu=ptr_d_wu;
+	d_wM=ptr_d_wM;
+	d_wu_cnt=ptr_d_wu_cnt;
+	d_wM_cnt=ptr_d_wM_cnt;
 	d_u = ptr_d_u;
 	d_u0 = ptr_d_u0;
 	d_E = ptr_d_E;
@@ -747,6 +1000,12 @@ __global__ void d_calc ()
 	d_ini_error = d_final_error;
 
 	for (int j=0;j<d_max_itr;j++){
+
+		d_compute_weight_u_0<<<d_nblockA, block>>>();
+		d_compute_weight_u_1<<<d_nblockB, block>>>();
+		reduceAddFloat<<<grid1, block>>>(d_wu_cnt, &d_wu_sum, d_nblockA);
+		d_compute_weight_u_2<<<d_nblockA, block>>>();
+		//d_compute_weight_u_3<<<d_nblockB, block>>>();
 
 		d_itr_count++;
 		d_compute_J_Ja_1<<<d_nblockA, block>>>();
@@ -771,7 +1030,7 @@ __global__ void d_calc ()
 
 		if (d_J<2.0 || j==d_max_itr-1){
 			// Compute the least error = final_error
-			d_compute_error();
+			d_compute_error_and_update_weight();
 		} // if (J<1.0){
 
 		cudaDeviceSynchronize();
@@ -872,6 +1131,10 @@ int main(int argc, char** argv)
 	CHECK(cudaMemcpyToSymbol( d_nblockB, &nblockB, sizeof(int)));	
 	float* ptr_d_u;
 	float* ptr_d_u0;
+	float* ptr_d_wu;
+	float* ptr_d_wu_cnt;
+	float* ptr_d_wM;
+	float* ptr_d_wM_cnt;
 	float* ptr_d_E;
 	float* ptr_d_FF;
 	float* ptr_d_Ja;
@@ -884,6 +1147,10 @@ int main(int argc, char** argv)
 	int* ptr_d_intA;
 	CHECK(cudaMalloc((void**)&ptr_d_u,n*sizeof(float)));
 	CHECK(cudaMalloc((void**)&ptr_d_u0,n*sizeof(float)));
+	CHECK(cudaMalloc((void**)&ptr_d_wu,n*sizeof(float)));
+	CHECK(cudaMalloc((void**)&ptr_d_wu_cnt,n*sizeof(float)));
+	CHECK(cudaMalloc((void**)&ptr_d_wM,m*sizeof(float)));
+	CHECK(cudaMalloc((void**)&ptr_d_wM_cnt,m*sizeof(float)));
 	CHECK(cudaMalloc((void**)&ptr_d_E,m*sizeof(float)));
 	CHECK(cudaMalloc((void**)&ptr_d_FF,n*sizeof(float)));
 	CHECK(cudaMalloc((void**)&ptr_d_Ja,n*sizeof(float)));
@@ -901,6 +1168,7 @@ int main(int argc, char** argv)
 	CHECK(cudaMemcpy(ptr_d_u, u, n*sizeof(float), cudaMemcpyHostToDevice));
 
 	d_set_device_ptr<<<grid1, block1>>>(
+		ptr_d_wu,ptr_d_wM,ptr_d_wu_cnt,ptr_d_wM_cnt,
 		ptr_d_u, ptr_d_u0, ptr_d_E, ptr_d_FF, ptr_d_Ja, ptr_d_JaJa,
 		ptr_d_floatA, ptr_d_floatA2, ptr_d_M, ptr_d_a, ptr_d_Cp0, ptr_d_intA);
 
@@ -917,6 +1185,7 @@ int main(int argc, char** argv)
 
 
 	int ini_error,final_error;
+	d_init_wM<<<nblockB, block>>>();
 	for (int i=0;i<max_try;i++){
 
 		/*	Iterate gradiate descent by Newton's method
@@ -979,6 +1248,10 @@ int main(int argc, char** argv)
 
 	CHECK(cudaFree(ptr_d_u));
 	CHECK(cudaFree(ptr_d_u0));
+	CHECK(cudaFree(ptr_d_wu));
+	CHECK(cudaFree(ptr_d_wM));
+	CHECK(cudaFree(ptr_d_wu_cnt));
+	CHECK(cudaFree(ptr_d_wM_cnt));
 	CHECK(cudaFree(ptr_d_E));
 	CHECK(cudaFree(ptr_d_FF));
 	CHECK(cudaFree(ptr_d_Ja));

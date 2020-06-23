@@ -134,7 +134,7 @@ void read_cnf(const char* File){
 
 int compute_error(float* u,float* C){
 	float d,u_min,u_max;
-	int split = 80;
+	int split = 1000;
 	int a[n];
 	int n1,n2,n3;  // for 3SAT
 	int num_false[split];
