@@ -251,6 +251,7 @@ void read_cnf(const char* File){
 		exit(1);
 	};
 		
+	int weighted=0;
 	while((fgets(buf,MAX,fp) != NULL)){
 		if(buf[0] == 'c'){
 			continue;
@@ -260,14 +261,23 @@ void read_cnf(const char* File){
 			printf("n=%d\n",n);
 			printf("m=%d\n",m);
 			base_M = (int *)calloc(m*nsat,sizeof(int));
+			if(strncmp(c2, "cnf", 3)==0){
+				weighted=0;
+			}else if(strncmp(c2, "wcnf", 4)==0){
+				weighted=1;
+			}
 //			for (int p=0;p<m;p++){ M[p] = base_M + p * nsat; }
 			continue;
 		}
 		n_lit = 0;
-		if ((token = strtok(buf, separator)) != NULL) {
-			do {
+		token = strtok(buf, separator);
+		if (token != NULL) {
+			if(!weighted){
 				lit[n_lit] = atoi(token);
-			}while (++n_lit < MAX_NSAT_CHECK && (token = strtok(NULL, separator)) != NULL);
+			}
+			for(;n_lit < MAX_NSAT_CHECK && (token = strtok(NULL, separator)) != NULL;n_lit++){
+				lit[n_lit] = atoi(token);
+			}
 			if (n_lit > nsat) {
 				printf( "over nsat=%d literals, ignored\n",nsat);
 			}
@@ -882,9 +892,14 @@ __global__ void d_compute_J_Ja_2 ()
 		for(int i=0;i<nsat;i++){
 			if(M[i]!=0){
 				q = (M[i] > 0 ? M[i]-1 : -M[i]-1);
+				//
+				/*
 				w = (M[i] > 0 ? d_wu[M[i]-1] : d_wu[-M[i]-1]);
 				//w+=d_wM[idx];
 				pn= (M[i] > 0 ? w : -w);
+				*/
+				//
+				pn= (M[i] > 0 ? 1 : -1);
 				Jaq= (dC < 1.0 ? -1.0*pn : 0.0);
 				atomicAdd(&d_Ja[q], Jaq);
 			}
