@@ -9,6 +9,6 @@ n=100
     echo "n = "${n}
  
     m=`printf "%06d" ${n}`
-    python script/generate_problem.py -n ${n} -c 4.26 -p 1000
+    python ../script/generate_problem.py -n ${n} -c 4.26 -p 1000
 #done
  
