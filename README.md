@@ -42,7 +42,7 @@ Input File = 3SAT instance in DIMACS format
 Demo problem: `3SAT_inst500`
 
 
-[Experiments](./experiment/README.md)
+[Benchmark scripts](./benchmark/README.md)
 
 ### Citation
 
