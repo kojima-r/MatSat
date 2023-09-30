@@ -11,7 +11,7 @@ do
     do
       j=`printf "%03d" ${i}`
       log=${resultdir}/log${j}.${m}.txt
-      time -p ./abdsat_gpu ./data/problem${j}.${m}.dat 1 1000 100 > ${log} 2>&1
+      time -p ./matsat_gpu ./data/problem${j}.${m}.dat 1 1000 100 > ${log} 2>&1
     done
 done
  

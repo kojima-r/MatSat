@@ -1,6 +1,6 @@
 
 export OMP_NUM_THREADS=80
-mkdir -p log_abd
+mkdir -p log_matsat
 mkdir -p log_riss
 
 for n in `seq 160000 10000 300000`
@@ -8,8 +8,8 @@ do
 m=`printf "%06d" ${n}`
 
 python script/generate_problem.py -n ${n} -c 4.26 -p 1
-log1=log_abd/log${m}.txt 
-result1=log_abd/result${m}.txt 
+log1=log_matsat/log${m}.txt 
+result1=log_matsat/result${m}.txt 
 
 log2=log_riss/log${m}.txt 
 result2=log_riss/result${m}.txt 

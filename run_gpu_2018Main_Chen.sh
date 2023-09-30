@@ -10,8 +10,8 @@ for f in `ls Data2018Main/Chen/*.cnf`
 do
 	b=`basename $f .cnf`
 	log=${resultdir}/${b}.${count}.txt
-	echo "time -p ./abdsat_gpu2 ${f} ${count} 1000 100 512 0.5" > ${log}
-	time -p ./abdsat_gpu2 ${f} ${count} 1000 100 512 0.5>> ${log} 2>&1
+	echo "time -p ./matsat_gpu ${f} ${count} 1000 100 512 0.5" > ${log}
+	time -p ./matsat_gpu ${f} ${count} 1000 100 512 0.5>> ${log} 2>&1
 	sleep 1
 done
 done
