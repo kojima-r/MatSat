@@ -13,10 +13,11 @@ This repository contains four implementations.
 ### Compile & Example
 
 #### (1) Naive C code
+Complie command using gcc with openmp and blas libraries
 ```
 gcc -O3 src/matsat_sp.c -o matsat -fopenmp -m64 -march=native -lm -lblas -DUSE_BLAS
 ```
-
+Solving the example problem: 3SAT_inst500
 ```
 time ./matsat 3SAT_inst500 [<seed> <max_itration> <sample_size(retry)>]
 ```
@@ -26,12 +27,13 @@ Complie command using nvcc (nvidia CUDA compile tool)
 ```
 nvcc -rdc=true -arch sm_35 -O3 -o matsat_gpu src_gpu/matsat_sp.cu
 ```
-
+Solving the example problem: 3SAT_inst500
 ```
 time ./matsat 3SAT_inst500 [<seed> <max_itration> <sample_size(retry)>]
 ```
 
 #### (3) Python implementation
+Solving the example problem: 3SAT_inst500
 ```
 python python/matsat_sp.py 3SAT_inst500
 ```
@@ -39,8 +41,7 @@ python python/matsat_sp.py 3SAT_inst500
 ### SAT problem
 Input File = 3SAT instance in DIMACS format
 
-Demo problem: `3SAT_inst500`
-
+Please see the exmaple problem using a text editor: `3SAT_inst500`
 
 [Benchmark scripts](./benchmark/README.md)
 
