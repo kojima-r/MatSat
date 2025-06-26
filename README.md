@@ -11,7 +11,7 @@ This repository contains four implementations.
 - C++ (GPU version): `src_gpu/abdsat_sp.cu`
 - python: `python/tensorized_sat_solver_sp.py`
 - Naive C code: `src/abdsat_sp.c`
-- Naive C with dense matrix format (deprecated): `src/abdsat_sp.c`
+- Naive C with dense matrix format (deprecated): `src/abdsat_dense.c`
 
 ### Compile & Example
 
